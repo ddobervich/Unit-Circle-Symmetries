@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Unit Circle Symmetries</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body { height: 100%; }
+
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: #141a20;
+      color: #e8eaed;
+      overflow: hidden;
+    }
+
+    /* The canvas fills the window; the title/controls float over its top edge. */
+    .top-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1rem 1rem 0;
+      pointer-events: none;
+    }
+
+    .top-overlay .controls { pointer-events: auto; }
+
+    header {
+      text-align: center;
+      max-width: 720px;
+      margin-bottom: 0.75rem;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.35rem;
+    }
+
+    .subtitle {
+      font-size: 0.9rem;
+      color: #9aa0a6;
+      line-height: 1.5;
+    }
+
+    .controls {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .controls label {
+      font-size: 0.85rem;
+      color: #9aa0a6;
+      margin-right: 0.25rem;
+    }
+
+    .mode-btn {
+      padding: 0.45rem 1.1rem;
+      border: 1px solid #3c4043;
+      border-radius: 6px;
+      background: #1e2328;
+      color: #bdc1c6;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .mode-btn:hover {
+      background: #2a3038;
+      border-color: #5f6368;
+    }
+
+    .mode-btn.active[data-mode="sine"] {
+      background: #1a3a52;
+      border-color: #4fc3f7;
+      color: #4fc3f7;
+    }
+
+    .mode-btn.active[data-mode="cosine"] {
+      background: #1a3d2e;
+      border-color: #66bb6a;
+      color: #66bb6a;
+    }
+
+    .canvas-wrap {
+      position: fixed;
+      inset: 0;
+    }
+
+    canvas {
+      display: block;
+      cursor: crosshair;
+    }
+  </style>
+</head>
+<body>
+  <div class="canvas-wrap">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div class="top-overlay" id="top-overlay">
+    <header>
+      <h1>Unit Circle Symmetries</h1>
+      <p class="subtitle">
+        Choose sine or cosine, then click a labeled angle on the circle and drag along the circumference.
+      </p>
+    </header>
+
+    <div class="controls">
+      <label>Highlight:</label>
+      <button class="mode-btn active" data-mode="sine" id="btn-sine">Sine</button>
+      <button class="mode-btn" data-mode="cosine" id="btn-cosine">Cosine</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Canvas size (CSS px), circle center and radius; set by resize().
+    let W = 640;
+    let H = 640;
+    let CX = W / 2;
+    let CY = H / 2;
+    let R = 220;
+    let topSafe = 0; // bottom edge of the title/controls overlay
+    const SNAP_RADIUS = 18;
+
+    const COLORS = {
+      bg: '#141a20',
+      axis: '#5f6368',
+      grid: '#1e2830',
+      circle: '#78909c',
+      arc: '#ffb74d',
+      startMark: '#ce93d8',
+      xPositive: '#aed581',
+      xNegative: '#e8907f',
+      triangle: '#546e7a',
+      sine: '#4fc3f7',
+      cosine: '#66bb6a',
+      point: '#eceff1',
+      snap: '#78909c',
+      snapActive: '#ffffff',
+      label: '#9aa0a6',
+      equation: '#ffffff',
+      value: '#ffeb3b', // every highlighted leg: all have length equal to the value
+      equationAccent: '#ffeb3b',
+    };
+
+    const ANGLE_LABELS = {
+      0: '0',
+      [Math.PI / 6]: 'π/6',
+      [Math.PI / 4]: 'π/4',
+      [Math.PI / 3]: 'π/3',
+      [Math.PI / 2]: 'π/2',
+      [(2 * Math.PI) / 3]: '2π/3',
+      [(3 * Math.PI) / 4]: '3π/4',
+      [(5 * Math.PI) / 6]: '5π/6',
+      [Math.PI]: 'π',
+      [(7 * Math.PI) / 6]: '7π/6',
+      [(5 * Math.PI) / 4]: '5π/4',
+      [(4 * Math.PI) / 3]: '4π/3',
+      [(3 * Math.PI) / 2]: '3π/2',
+      [(5 * Math.PI) / 3]: '5π/3',
+      [(7 * Math.PI) / 4]: '7π/4',
+      [(11 * Math.PI) / 6]: '11π/6',
+    };
+
+    const MAIN_ANGLES = Object.keys(ANGLE_LABELS).map(Number);
+
+    let mode = 'sine'; // 'sine' | 'cosine'
+    let dragging = false;
+    let startAngle = null;
+    let currentAngle = null;
+    let lastMouseAngle = null; // raw [0, 2π) angle at the previous mousemove
+    let travel = 0;            // signed cumulative angle swept since mousedown
+    let dragDirection = 1; // +1 CCW, -1 CW
+    // Which symmetries are shown with the dragged angle. Tab cycles; resets on
+    // each drag. 0 = none; then for each of the 3 symmetries, its figure alone
+    // (odd views) followed by its figure with its equation box (even views);
+    // 7 = all of them with their boxes.
+    const SYMMETRY_VIEWS = 8;
+    let symmetryView = 0;
+
+    function normalizeAngle(a) {
+      let t = a % (2 * Math.PI);
+      if (t < 0) t += 2 * Math.PI;
+      return t;
+    }
+
+    function angleDiff(from, to) {
+      let d = to - from;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      return d;
+    }
+
+    function toCanvas(x, y) {
+      return { x: CX + x * R, y: CY - y * R };
+    }
+
+    function fromCanvas(px, py) {
+      return { x: (px - CX) / R, y: -(py - CY) / R };
+    }
+
+    function dist(ax, ay, bx, by) {
+      return Math.hypot(ax - bx, ay - by);
+    }
+
+    function nearestSnapAngle(px, py) {
+      const p = fromCanvas(px, py);
+      const len = Math.hypot(p.x, p.y);
+      if (len < 0.3) return null;
+      let angle = Math.atan2(p.y, p.x);
+      if (angle < 0) angle += 2 * Math.PI;
+
+      let best = null;
+      let bestDist = Infinity;
+      for (const a of MAIN_ANGLES) {
+        const pt = toCanvas(Math.cos(a), Math.sin(a));
+        const d = dist(px, py, pt.x, pt.y);
+        if (d < bestDist) {
+          bestDist = d;
+          best = a;
+        }
+      }
+      return bestDist <= SNAP_RADIUS ? best : null;
+    }
+
+    function angleOnCircle(px, py) {
+      const p = fromCanvas(px, py);
+      let a = Math.atan2(p.y, p.x);
+      if (a < 0) a += 2 * Math.PI;
+      return a;
+    }
+
+    function gcd(a, b) {
+      while (b) [a, b] = [b, a % b];
+      return a;
+    }
+
+    // Formats any angle (any magnitude, either sign) as a reduced multiple of π/12
+    // when it lands on one, otherwise in degrees.
+    function formatAngleRad(rad) {
+      const eps = 0.001;
+      const k = Math.round(rad / (Math.PI / 12));
+      if (Math.abs(rad - (k * Math.PI) / 12) < eps) {
+        if (k === 0) return '0';
+        const sign = k < 0 ? '−' : '';
+        const g = gcd(Math.abs(k), 12);
+        const num = Math.abs(k) / g;
+        const den = 12 / g;
+        const numStr = num === 1 ? 'π' : `${num}π`;
+        return sign + (den === 1 ? numStr : `${numStr}/${den}`);
+      }
+
+      const deg = (rad * 180) / Math.PI;
+      return `${deg.toFixed(1)}°`;
+    }
+
+    function getAngleLabel(rad) {
+      const n = normalizeAngle(rad);
+      for (const [key, label] of Object.entries(ANGLE_LABELS)) {
+        if (Math.abs(n - parseFloat(key)) < 0.001) return label;
+      }
+      return formatAngleRad(n);
+    }
+
+    function drawGrid() {
+      ctx.fillStyle = COLORS.bg;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      const step = R / 2;
+      for (let i = -2; i <= 2; i++) {
+        if (i === 0) continue;
+        const off = i * step;
+        ctx.beginPath();
+        ctx.moveTo(CX + off, CY - 2 * step);
+        ctx.lineTo(CX + off, CY + 2 * step);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(CX - 2 * step, CY - off);
+        ctx.lineTo(CX + 2 * step, CY - off);
+        ctx.stroke();
+      }
+    }
+
+    function drawAxes() {
+      ctx.strokeStyle = COLORS.axis;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const ext = R * 1.4;
+      ctx.moveTo(CX - ext, CY);
+      ctx.lineTo(CX + ext, CY);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(CX, CY - ext);
+      ctx.lineTo(CX, CY + ext);
+      ctx.stroke();
+
+      ctx.fillStyle = COLORS.label;
+      ctx.font = '14px "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('x', CX + ext + 12, CY - 14);
+      ctx.fillText('y', CX + 14, CY - ext - 12);
+
+      ctx.font = '12px "Segoe UI", sans-serif';
+      ctx.fillText('1', CX + R + 12, CY + 4);
+      ctx.fillText('−1', CX - R - 14, CY + 4);
+      ctx.fillText('1', CX + 4, CY - R - 10);
+      ctx.fillText('−1', CX + 4, CY + R + 14);
+    }
+
+    function drawCircle() {
+      ctx.strokeStyle = COLORS.circle;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(CX, CY, R, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+
+    function drawSnapPoints(activeAngle) {
+      for (const a of MAIN_ANGLES) {
+        const pt = toCanvas(Math.cos(a), Math.sin(a));
+        const isActive = activeAngle !== null && Math.abs(normalizeAngle(a) - normalizeAngle(activeAngle)) < 0.001;
+
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, isActive ? 7 : 5, 0, 2 * Math.PI);
+        ctx.fillStyle = isActive ? COLORS.snapActive : COLORS.snap;
+        ctx.fill();
+
+        const lx = Math.cos(a) * 1.28;
+        const ly = Math.sin(a) * 1.28;
+        const lp = toCanvas(lx, ly);
+        ctx.fillStyle = COLORS.label;
+        ctx.font = '11px "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(ANGLE_LABELS[a], lp.x, lp.y);
+      }
+    }
+
+    // Color for anything representing x: green when positive, red when negative.
+    function xColor(sweep) {
+      return sweep < 0 ? COLORS.xNegative : COLORS.xPositive;
+    }
+
+    // Draws the arc starting at `from` and sweeping by the signed angle `sweep`
+    // (positive = counterclockwise). Canvas y points down, so math angles are
+    // negated and a CCW sweep is the canvas's "anticlockwise" direction.
+    function drawArc(from, sweep) {
+      ctx.strokeStyle = xColor(sweep);
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(CX, CY, R, -from, -(from + sweep), sweep > 0);
+      ctx.stroke();
+
+      if (Math.abs(sweep) < 0.02) return;
+
+      // Arrowhead at the end, along the tangent in the direction of travel
+      const t = from + sweep;
+      const sgn = Math.sign(sweep);
+      const tip = { x: CX + R * Math.cos(t), y: CY - R * Math.sin(t) };
+      const dir = Math.atan2(-Math.cos(t) * sgn, -Math.sin(t) * sgn);
+      const AH = 18;
+      ctx.fillStyle = xColor(sweep);
+      ctx.beginPath();
+      ctx.moveTo(tip.x, tip.y);
+      ctx.lineTo(tip.x - AH * Math.cos(dir - 0.42), tip.y - AH * Math.sin(dir - 0.42));
+      ctx.lineTo(tip.x - AH * Math.cos(dir + 0.42), tip.y - AH * Math.sin(dir + 0.42));
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    const START_MARK_R = 50;  // radius of the 0 → start-angle mark
+    const X_MARK_R = 68;      // starting radius of the x mark
+    const X_MARK_GROWTH = 14; // px the x mark spirals outward per full turn
+
+    function markPoint(from, s, r0, growth) {
+      const r = r0 + (growth * Math.abs(s)) / (2 * Math.PI);
+      const t = from + s;
+      return { x: CX + r * Math.cos(t), y: CY - r * Math.sin(t) };
+    }
+
+    // Draws an angle-mark arc around the origin from `from` sweeping by `sweep`
+    // (positive = CCW), spiraling outward by `growth` px per turn, with an
+    // arrowhead at the end pointing in the direction of travel.
+    function drawMarkArc(from, sweep, r0, growth, color) {
+      const steps = Math.max(8, Math.ceil(Math.abs(sweep) / 0.05));
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (let i = 0; i <= steps; i++) {
+        const p = markPoint(from, (sweep * i) / steps, r0, growth);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+
+      const tip = markPoint(from, sweep, r0, growth);
+      const back = markPoint(from, sweep - Math.sign(sweep) * 0.01, r0, growth);
+      const dir = Math.atan2(tip.y - back.y, tip.x - back.x);
+      const AH = 9;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(tip.x, tip.y);
+      ctx.lineTo(tip.x - AH * Math.cos(dir - 0.45), tip.y - AH * Math.sin(dir - 0.45));
+      ctx.lineTo(tip.x - AH * Math.cos(dir + 0.45), tip.y - AH * Math.sin(dir + 0.45));
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Splits a radian measure that is a multiple of π/12 into math-label parts:
+    // a stacked fraction (e.g. 3π over 2) or plain text (e.g. π, 2π).
+    function radianParts(rad, color) {
+      const k = Math.round(rad / (Math.PI / 12));
+      if (k === 0) return [{ type: 'text', text: '0', color }];
+      const g = gcd(Math.abs(k), 12);
+      const num = Math.abs(k) / g;
+      const den = 12 / g;
+      const numStr = num === 1 ? 'π' : `${num}π`;
+      if (den === 1) return [{ type: 'text', text: numStr, color }];
+      return [{ type: 'frac', num: numStr, den: String(den), color }];
+    }
+
+    const MATH_FONT = '"Times New Roman", Georgia, serif';
+    const MATH_FONT_TEXT = `19px ${MATH_FONT}`;
+    const MATH_FONT_VAR = `italic 19px ${MATH_FONT}`;
+    const MATH_FONT_FRAC = `15px ${MATH_FONT}`;
+
+    function measureMathPart(p) {
+      if (p.type === 'frac') {
+        ctx.font = MATH_FONT_FRAC;
+        return Math.max(ctx.measureText(p.num).width, ctx.measureText(p.den).width) + 6;
+      }
+      if (p.type === 'op') {
+        ctx.font = MATH_FONT_TEXT;
+        return ctx.measureText(p.text).width + 10;
+      }
+      ctx.font = p.type === 'var' ? MATH_FONT_VAR : MATH_FONT_TEXT;
+      return ctx.measureText(p.text).width;
+    }
+
+    // Draws a row of math parts centered at (cx, cy) on a dark backing box.
+    function drawMathLabel(parts, cx, cy) {
+      const total = parts.map(measureMathPart).reduce((a, b) => a + b, 0);
+      const hasFrac = parts.some((p) => p.type === 'frac');
+      const boxH = hasFrac ? 40 : 26;
+      const padX = 6;
+
+      ctx.fillStyle = 'rgba(20, 26, 32, 0.88)';
+      roundRect(ctx, cx - total / 2 - padX, cy - boxH / 2, total + 2 * padX, boxH, 6);
+      ctx.fill();
+
+      drawMathRow(parts, cx, cy);
+      return { w: total + 2 * padX, h: boxH };
+    }
+
+    // Draws a row of math parts centered at (cx, cy). Part types: 'text'
+    // (upright), 'var' (italic), 'op' (operator with spacing), 'frac' (stacked
+    // numerator over denominator).
+    function drawMathRow(parts, cx, cy) {
+      const widths = parts.map(measureMathPart);
+      const total = widths.reduce((a, b) => a + b, 0);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      let x = cx - total / 2;
+      parts.forEach((p, i) => {
+        const w = widths[i];
+        const mx = x + w / 2;
+        ctx.fillStyle = p.color;
+        if (p.type === 'frac') {
+          ctx.font = MATH_FONT_FRAC;
+          ctx.fillText(p.num, mx, cy - 9);
+          ctx.fillText(p.den, mx, cy + 10);
+          ctx.strokeStyle = p.color;
+          ctx.lineWidth = 1.25;
+          ctx.beginPath();
+          ctx.moveTo(x + 1, cy);
+          ctx.lineTo(x + w - 1, cy);
+          ctx.stroke();
+        } else {
+          ctx.font = p.type === 'var' ? MATH_FONT_VAR : MATH_FONT_TEXT;
+          ctx.fillText(p.text, mx, cy + 1);
+        }
+        x += w;
+      });
+    }
+
+    // Draws the base ray, a mark from 0 to the base angle (only when
+    // `showStartMark` and the base isn't coterminal with 0), and the x mark from
+    // the base ray to the current ray with an arrow showing the direction.
+    // Returns the combined label (e.g. "x", "−x", "π − x", "3π/2 + x") and its
+    // position so labels can be drawn after every figure, on top.
+    function drawAngleMarks(start, sweep, showStartMark) {
+      const O = toCanvas(0, 0);
+      const S = toCanvas(Math.cos(start), Math.sin(start));
+
+      ctx.strokeStyle = COLORS.arc;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(O.x, O.y);
+      ctx.lineTo(S.x, S.y);
+      ctx.stroke();
+
+      const startNorm = normalizeAngle(start);
+      const hasStart = startNorm > 0.001 && startNorm < 2 * Math.PI - 0.001;
+      const hasX = Math.abs(sweep) >= 0.02;
+      const startMark = hasStart && showStartMark;
+
+      if (startMark) drawMarkArc(0, startNorm, START_MARK_R, 0, COLORS.startMark);
+      if (hasX) drawMarkArc(start, sweep, X_MARK_R, X_MARK_GROWTH, xColor(sweep));
+
+      const parts = [];
+      if (hasStart) parts.push(...radianParts(startNorm, COLORS.startMark));
+      if (hasX) {
+        if (hasStart) parts.push({ type: 'op', text: sweep < 0 ? '−' : '+', color: xColor(sweep) });
+        else if (sweep < 0) parts.push({ type: 'text', text: '−', color: xColor(sweep) });
+        parts.push({ type: 'var', text: 'x', color: xColor(sweep) });
+      }
+      if (parts.length === 0) return null;
+
+      // Place the label outside the marks, at the middle of the total angle
+      // measured from 0 when the start mark is drawn, otherwise at the middle
+      // of the x mark (or along the base ray when there's no x yet).
+      const base = startMark ? 0 : start;
+      const total = (startMark ? startNorm : 0) + (hasX ? sweep : 0);
+      const tLabel = base + total / 2;
+      const outerR = hasX
+        ? X_MARK_R + (X_MARK_GROWTH * Math.abs(sweep)) / (2 * Math.PI)
+        : START_MARK_R;
+      const widths = parts.map(measureMathPart);
+      const halfW = (widths.reduce((a, b) => a + b, 0) + 12) / 2;
+      const halfH = parts.some((p) => p.type === 'frac') ? 20 : 13;
+      // Distance from center to box edge along the label direction
+      const c = Math.abs(Math.cos(tLabel));
+      const s = Math.abs(Math.sin(tLabel));
+      const edge = Math.min(c > 1e-6 ? halfW / c : Infinity, s > 1e-6 ? halfH / s : Infinity);
+      const rLabel = outerR + 6 + edge;
+      return { parts, x: CX + rLabel * Math.cos(tLabel), y: CY - rLabel * Math.sin(tLabel) };
+    }
+
+    // The dragged angle is θ = start + sweep. Returns the other angles, written
+    // as (base ± x) with base a labeled angle, whose sine or cosine equals the
+    // current mode's value at θ for every x:
+    //   sine mode:   sin(π − θ),  cos(π/2 − θ),  cos(θ − π/2)
+    //   cosine mode: cos(−θ),     sin(π/2 − θ),  sin(π/2 + θ)
+    function equivalentFigures(start, sweep, fn) {
+      const half = Math.PI / 2;
+      const list = fn === 'sine'
+        ? [
+            { fn: 'sine',   base: Math.PI - start, sweep: -sweep },
+            { fn: 'cosine', base: half - start,    sweep: -sweep },
+            { fn: 'cosine', base: start - half,    sweep },
+          ]
+        : [
+            { fn: 'cosine', base: -start,          sweep: -sweep },
+            { fn: 'sine',   base: half - start,    sweep: -sweep },
+            { fn: 'sine',   base: half + start,    sweep },
+          ];
+      return list.map((f) => ({ ...f, base: snapToTwelfth(normalizeAngle(f.base)) }));
+    }
+
+    // Removes floating-point drift so bases compare and format exactly.
+    function snapToTwelfth(a) {
+      const k = Math.round(a / (Math.PI / 12)) % 24;
+      return (k * Math.PI) / 12;
+    }
+
+    function drawTriangle(angle, highlightMode) {
+      const cosA = Math.cos(angle);
+      const sinA = Math.sin(angle);
+      const O = toCanvas(0, 0);
+      const P = toCanvas(cosA, sinA);
+
+      if (highlightMode === 'cosine') {
+        // Right triangle via y-axis: horizontal leg from point to (0, sin θ)
+        const Y = toCanvas(0, sinA);
+
+        ctx.strokeStyle = COLORS.triangle;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(O.x, O.y);
+        ctx.lineTo(Y.x, Y.y);
+        ctx.stroke();
+
+        ctx.strokeStyle = COLORS.value;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(Y.x, Y.y);
+        ctx.lineTo(P.x, P.y);
+        ctx.stroke();
+
+        ctx.strokeStyle = COLORS.triangle;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(O.x, O.y);
+        ctx.lineTo(P.x, P.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const signX = cosA >= 0 ? 1 : -1;
+        const signY = sinA >= 0 ? -1 : 1;
+        const m = 12;
+        ctx.strokeStyle = COLORS.triangle;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(Y.x, Y.y + signY * m);
+        ctx.lineTo(Y.x + signX * m, Y.y + signY * m);
+        ctx.lineTo(Y.x + signX * m, Y.y);
+        ctx.stroke();
+      } else {
+        // Right triangle via x-axis: vertical leg from (cos θ, 0) to point
+        const H = toCanvas(cosA, 0);
+
+        ctx.strokeStyle = COLORS.triangle;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(O.x, O.y);
+        ctx.lineTo(H.x, H.y);
+        ctx.stroke();
+
+        ctx.strokeStyle = COLORS.value;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(H.x, H.y);
+        ctx.lineTo(P.x, P.y);
+        ctx.stroke();
+
+        ctx.strokeStyle = COLORS.triangle;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(O.x, O.y);
+        ctx.lineTo(P.x, P.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const signX = cosA >= 0 ? 1 : -1;
+        const signY = sinA >= 0 ? -1 : 1;
+        const m = 12;
+        ctx.strokeStyle = COLORS.triangle;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(H.x + signX * m, H.y);
+        ctx.lineTo(H.x + signX * m, H.y + signY * m);
+        ctx.lineTo(H.x, H.y + signY * m);
+        ctx.stroke();
+      }
+
+      ctx.beginPath();
+      ctx.arc(P.x, P.y, 6, 0, 2 * Math.PI);
+      ctx.fillStyle = COLORS.point;
+      ctx.fill();
+    }
+
+    // Math parts for one figure's expression, e.g. sin(5π/6 − x)
+    function figureParts(f) {
+      const parts = [
+        { type: 'text', text: f.fn === 'sine' ? 'sin' : 'cos', color: f.fn === 'sine' ? COLORS.sine : COLORS.cosine },
+        { type: 'text', text: '(', color: COLORS.equation },
+      ];
+      const xc = xColor(f.sweep);
+      const neg = f.sweep < 0;
+      if (normalizeAngle(f.base) > 0.001) {
+        parts.push(...radianParts(f.base, COLORS.startMark));
+        parts.push({ type: 'op', text: neg ? '−' : '+', color: xc });
+      } else if (neg) {
+        parts.push({ type: 'text', text: '−', color: xc });
+      }
+      parts.push({ type: 'var', text: 'x', color: xc });
+      parts.push({ type: 'text', text: ')', color: COLORS.equation });
+      return parts;
+    }
+
+    // Midpoint of a figure's highlighted (yellow) leg, in canvas coordinates
+    function legMidpoint(f) {
+      const a = f.base + f.sweep;
+      return f.fn === 'sine'
+        ? toCanvas(Math.cos(a), Math.sin(a) / 2)
+        : toCanvas(Math.cos(a) / 2, Math.sin(a));
+    }
+
+    // One box per visible figure, each placed beside that figure's point and
+    // showing its own expression and the shared value, e.g.
+    //   sin(5π/6 − x) = 0.8660
+    //   where x = 40.0°
+    // with a faint dashed leader from the figure's highlighted leg to its box.
+    function drawEquationBoxes(figures) {
+      figures = figures.filter((f) => f.showBox !== false);
+      const value = mode === 'sine' ? Math.sin(currentAngle) : Math.cos(currentAngle);
+      const valueText = Math.abs(value) < 5e-5
+        ? '0.0000'
+        : (value < 0 ? '−' : '') + Math.abs(value).toFixed(4);
+      const xVal = Math.abs(travel) >= 0.02 ? formatAngleRad(Math.abs(travel)) : '0';
+      const row2 = [
+        { type: 'text', text: 'where ', color: COLORS.label },
+        { type: 'var', text: 'x', color: COLORS.label },
+        { type: 'op', text: '=', color: COLORS.label },
+        { type: 'text', text: xVal, color: COLORS.label },
+      ];
+      const w2 = row2.map(measureMathPart).reduce((a, b) => a + b, 0);
+      const h2 = 24;
+      const padX = 16;
+      const padY = 8;
+      const margin = 8;
+
+      const boxes = figures.map((f) => {
+        const row1 = [
+          ...figureParts(f),
+          { type: 'op', text: '=', color: COLORS.equation },
+          { type: 'text', text: valueText, color: COLORS.value },
+        ];
+        const w1 = row1.map(measureMathPart).reduce((a, b) => a + b, 0);
+        const h1 = row1.some((p) => p.type === 'frac') ? 40 : 26;
+        const w = Math.max(w1, w2) + padX * 2;
+        const h = h1 + h2 + padY * 2;
+
+        // Offset outward from the figure's point, based on its quadrant
+        const a = f.base + f.sweep;
+        let ox = Math.cos(a) * 1.55;
+        let oy = Math.sin(a) * 1.55;
+        if (Math.abs(ox) < 0.4) ox = ox >= 0 ? 0.55 : -0.55;
+        if (Math.abs(oy) < 0.4) oy = oy >= 0 ? 0.55 : -0.55;
+        const pos = toCanvas(ox, oy);
+        return { f, row1, h1, w, h, x: pos.x, y: pos.y, dirY: oy >= 0 ? -1 : 1 };
+      });
+
+      // Keep boxes on screen and clear of the title/controls, then nudge any
+      // box that overlaps an earlier one vertically (away from the x-axis).
+      const clamp = (b) => {
+        b.x = Math.min(Math.max(b.x, b.w / 2 + margin), W - b.w / 2 - margin);
+        b.y = Math.min(Math.max(b.y, topSafe + b.h / 2 + margin), H - b.h / 2 - margin);
+      };
+      const overlaps = (a, b) =>
+        Math.abs(a.x - b.x) < (a.w + b.w) / 2 + margin &&
+        Math.abs(a.y - b.y) < (a.h + b.h) / 2 + margin;
+      boxes.forEach((b, i) => {
+        clamp(b);
+        for (let tries = 0; tries < 40; tries++) {
+          const hit = boxes.slice(0, i).find((o) => overlaps(b, o));
+          if (!hit) break;
+          b.y = hit.y + b.dirY * ((hit.h + b.h) / 2 + margin);
+          clamp(b);
+          if (overlaps(b, hit)) b.dirY = -b.dirY; // blocked by the screen edge
+        }
+      });
+
+      ctx.save();
+      ctx.strokeStyle = COLORS.value;
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+      for (const b of boxes) {
+        const m = legMidpoint(b.f);
+        ctx.beginPath();
+        ctx.moveTo(m.x, m.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      for (const b of boxes) {
+        ctx.fillStyle = 'rgba(20, 26, 32, 0.92)';
+        ctx.strokeStyle = b.f.fn === 'sine' ? COLORS.sine : COLORS.cosine;
+        ctx.lineWidth = 2;
+        roundRect(ctx, b.x - b.w / 2, b.y - b.h / 2, b.w, b.h, 8);
+        ctx.fill();
+        ctx.stroke();
+
+        const top = b.y - b.h / 2 + padY;
+        drawMathRow(b.row1, b.x, top + b.h1 / 2);
+        drawMathRow(row2, b.x, top + b.h1 + h2 / 2);
+      }
+    }
+
+    function roundRect(c, x, y, w, h, r) {
+      c.beginPath();
+      c.moveTo(x + r, y);
+      c.lineTo(x + w - r, y);
+      c.quadraticCurveTo(x + w, y, x + w, y + r);
+      c.lineTo(x + w, y + h - r);
+      c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      c.lineTo(x + r, y + h);
+      c.quadraticCurveTo(x, y + h, x, y + h - r);
+      c.lineTo(x, y + r);
+      c.quadraticCurveTo(x, y, x + r, y);
+      c.closePath();
+    }
+
+    function visibleEquivalents(equivalents) {
+      if (symmetryView === 0) return [];
+      if (symmetryView <= 2 * equivalents.length) {
+        const f = equivalents[Math.floor((symmetryView - 1) / 2)];
+        return [{ ...f, showBox: symmetryView % 2 === 0 }];
+      }
+      return equivalents;
+    }
+
+    function render() {
+      drawGrid();
+      drawAxes();
+      drawCircle();
+      drawSnapPoints(startAngle);
+
+      if (dragging && startAngle !== null && currentAngle !== null) {
+        const figures = [
+          { fn: mode, base: startAngle, sweep: travel, main: true },
+          ...visibleEquivalents(equivalentFigures(startAngle, travel, mode)),
+        ];
+
+        // Draw each layer for every figure before the next layer, so labels
+        // and markers stay on top of the other figures' lines.
+        for (const f of figures) drawArc(f.base, f.sweep);
+        for (const f of figures) drawTriangle(f.base + f.sweep, f.fn);
+        const labels = figures.map((f) => drawAngleMarks(f.base, f.sweep, !!f.main));
+
+        for (const f of figures) {
+          const basePt = toCanvas(Math.cos(f.base), Math.sin(f.base));
+          ctx.beginPath();
+          ctx.arc(basePt.x, basePt.y, 8, 0, 2 * Math.PI);
+          ctx.strokeStyle = COLORS.arc;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        for (const l of labels) {
+          if (l) drawMathLabel(l.parts, l.x, l.y);
+        }
+
+        drawEquationBoxes(figures);
+      }
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+
+      const snap = nearestSnapAngle(px, py);
+      if (snap !== null) {
+        dragging = true;
+        startAngle = snap;
+        currentAngle = snap;
+        lastMouseAngle = snap;
+        travel = 0;
+        symmetryView = 0;
+        dragDirection = 1;
+        render();
+      }
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+
+      if (dragging) {
+        // Accumulate small per-move steps so the sweep keeps its true direction
+        // and magnitude, even past π or around the full circle.
+        const mouseAngle = angleOnCircle(px, py);
+        travel += angleDiff(lastMouseAngle, mouseAngle);
+        lastMouseAngle = mouseAngle;
+        currentAngle = startAngle + travel;
+        dragDirection = travel >= 0 ? 1 : -1;
+        render();
+      } else {
+        canvas.style.cursor = nearestSnapAngle(px, py) !== null ? 'grab' : 'crosshair';
+      }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      dragging = false;
+      startAngle = null;
+      currentAngle = null;
+      render();
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      if (dragging) {
+        dragging = false;
+        startAngle = null;
+        currentAngle = null;
+        render();
+      }
+    });
+
+    document.getElementById('btn-sine').addEventListener('click', () => {
+      mode = 'sine';
+      document.getElementById('btn-sine').classList.add('active');
+      document.getElementById('btn-cosine').classList.remove('active');
+      render();
+    });
+
+    document.getElementById('btn-cosine').addEventListener('click', () => {
+      mode = 'cosine';
+      document.getElementById('btn-cosine').classList.add('active');
+      document.getElementById('btn-sine').classList.remove('active');
+      render();
+    });
+
+    // Touch support
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const t = e.touches[0];
+      canvas.dispatchEvent(new MouseEvent('mousedown', {
+        clientX: t.clientX, clientY: t.clientY, bubbles: true
+      }));
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const t = e.touches[0];
+      canvas.dispatchEvent(new MouseEvent('mousemove', {
+        clientX: t.clientX, clientY: t.clientY, bubbles: true
+      }));
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      canvas.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+
+    // Sizes the canvas to the window (sharp on high-DPI screens) and fits the
+    // circle between the top overlay and the bottom of the window.
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      W = window.innerWidth;
+      H = window.innerHeight;
+      canvas.width = Math.round(W * dpr);
+      canvas.height = Math.round(H * dpr);
+      canvas.style.width = W + 'px';
+      canvas.style.height = H + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const top = document.getElementById('top-overlay').getBoundingClientRect().bottom;
+      const bottom = H - 16;
+      topSafe = top;
+      CX = W / 2;
+      CY = (top + bottom) / 2;
+      // 1.45 R leaves room for the angle labels and equation box around the circle
+      R = Math.max(80, Math.min(W / 2, (bottom - top) / 2) / 1.45);
+      render();
+    }
+
+    window.addEventListener('resize', resize);
+
+    // Tab steps through the symmetries one at a time, then all together, then
+    // back to just the dragged angle. Shift+Tab steps backward.
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      e.preventDefault();
+      const step = e.shiftKey ? SYMMETRY_VIEWS - 1 : 1;
+      symmetryView = (symmetryView + step) % SYMMETRY_VIEWS;
+      render();
+    });
+    render();
+    resize();
+  </script>
+</body>
+</html>
